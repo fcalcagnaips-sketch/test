@@ -12,8 +12,8 @@ const API_CONFIG = {
         // Per ambiente di produzione
         production: {
             baseUrl: 'https://api.amadeus.com',
-            apiKey: 'YOUR_PRODUCTION_API_KEY',
-            apiSecret: 'YOUR_PRODUCTION_API_SECRET'
+            apiKey: 'XkJ41lnqYnVsArVvvarsCR4wj16gNFFM',
+            apiSecret: 'm6HiG4alvAqewv7A'
         }
     },
     
