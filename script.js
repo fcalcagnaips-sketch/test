@@ -81,8 +81,14 @@ class TravelPlanner {
         this.showLoading();
         
         try {
-            // In un'applicazione reale, qui faresti le chiamate API reali
-            const results = await this.searchTravelOptions(searchParams);
+            let results;
+            if (this.demoMode) {
+                // Usa dati simulati se le API non sono configurate
+                results = await this.searchTravelOptions(searchParams);
+            } else {
+                // Usa API reali Amadeus
+                results = await this.searchRealTravelOptions(searchParams);
+            }
             this.displayResults(results);
         } catch (error) {
             console.error('Errore durante la ricerca:', error);
@@ -352,6 +358,223 @@ class TravelPlanner {
     showError(message) {
         this.hideLoading();
         alert(message);
+    }
+
+    // Metodo per ricerca con API reali Amadeus
+    async searchRealTravelOptions(params) {
+        try {
+            // Ottieni il token di accesso
+            await this.getAmadeusToken();
+            
+            // Converti nomi città in codici aeroportuali
+            const originCode = await this.getCityCode(params.departure);
+            let destinationCodes = [];
+            
+            if (params.anywhere) {
+                // Per "Ovunque", usa le città popolari dalla configurazione
+                destinationCodes = API_CONFIG.settings.popularCities.map(city => city.code);
+            } else {
+                const destCode = await this.getCityCode(params.destination);
+                destinationCodes = [destCode];
+            }
+            
+            const results = [];
+            
+            // Cerca voli per ogni destinazione
+            for (let destCode of destinationCodes) {
+                try {
+                    const flightOffers = await this.searchFlights(
+                        originCode, 
+                        destCode, 
+                        params.departureDate, 
+                        params.returnDate, 
+                        params.travelers
+                    );
+                    
+                    if (flightOffers.data && flightOffers.data.length > 0) {
+                        // Cerca hotel per la stessa destinazione
+                        const hotelOffers = await this.searchHotels(
+                            destCode,
+                            params.departureDate,
+                            params.returnDate,
+                            params.travelers
+                        );
+                        
+                        // Combina voli e hotel in offerte complete
+                        const combinedOffers = this.combineFlightAndHotelOffers(
+                            flightOffers.data,
+                            hotelOffers.data || [],
+                            params.budget,
+                            params.travelers
+                        );
+                        
+                        results.push(...combinedOffers);
+                    }
+                } catch (error) {
+                    console.warn(`Errore ricerca per ${destCode}:`, error);
+                    // Continua con le altre destinazioni
+                }
+            }
+            
+            // Filtra per budget e ordina per prezzo
+            return results
+                .filter(offer => offer.totalPrice <= params.budget)
+                .sort((a, b) => a.totalPrice - b.totalPrice)
+                .slice(0, API_CONFIG.settings.maxResults);
+                
+        } catch (error) {
+            console.error('Errore API Amadeus:', error);
+            // Fallback ai dati simulati in caso di errore
+            console.log('Fallback a dati simulati...');
+            return await this.searchTravelOptions(params);
+        }
+    }
+
+    // Converte nome città in codice aeroportuale
+    async getCityCode(cityName) {
+        if (!this.accessToken) {
+            await this.getAmadeusToken();
+        }
+        
+        try {
+            const url = `${this.baseUrl}/v1/reference-data/locations?subType=CITY&keyword=${encodeURIComponent(cityName)}&max=1`;
+            const response = await fetch(url, {
+                headers: {
+                    'Authorization': `Bearer ${this.accessToken}`
+                }
+            });
+            
+            const data = await response.json();
+            if (data.data && data.data.length > 0) {
+                return data.data[0].iataCode;
+            }
+            
+            // Fallback per città comuni
+            const commonCities = {
+                'milano': 'MXP',
+                'roma': 'FCO',
+                'napoli': 'NAP',
+                'venezia': 'VCE',
+                'firenze': 'FLR',
+                'parigi': 'PAR',
+                'londra': 'LON',
+                'madrid': 'MAD',
+                'barcellona': 'BCN',
+                'amsterdam': 'AMS'
+            };
+            
+            return commonCities[cityName.toLowerCase()] || 'MXP';
+        } catch (error) {
+            console.warn('Errore ricerca codice città:', error);
+            return 'MXP'; // Fallback Milano
+        }
+    }
+
+    // Combina offerte voli e hotel
+    combineFlightAndHotelOffers(flights, hotels, budget, travelers) {
+        const results = [];
+        
+        flights.forEach(flight => {
+            const flightPrice = parseFloat(flight.price.total);
+            const remainingBudget = budget - (flightPrice * travelers);
+            
+            if (remainingBudget > 0) {
+                // Trova hotel compatibili con il budget rimanente
+                const compatibleHotels = hotels.filter(hotel => {
+                    const hotelPrice = hotel.offers && hotel.offers[0] ? 
+                        parseFloat(hotel.offers[0].price.total) : 100;
+                    return hotelPrice <= remainingBudget;
+                });
+                
+                const hotel = compatibleHotels.length > 0 ? 
+                    compatibleHotels[0] : this.generateMockHotel();
+                
+                const hotelPrice = hotel.offers && hotel.offers[0] ? 
+                    parseFloat(hotel.offers[0].price.total) : 100;
+                
+                const totalPrice = (flightPrice * travelers) + hotelPrice;
+                
+                if (totalPrice <= budget) {
+                    results.push({
+                        destination: this.getDestinationName(flight.itineraries[0].segments[0].arrival.iataCode),
+                        totalPrice: Math.round(totalPrice),
+                        pricePerPerson: Math.round(totalPrice / travelers),
+                        transport: this.formatFlightTransport(flight),
+                        accommodation: this.formatHotelAccommodation(hotel),
+                        duration: this.calculateFlightDuration(flight)
+                    });
+                }
+            }
+        });
+        
+        return results;
+    }
+
+    // Formatta i dati del volo per la visualizzazione
+    formatFlightTransport(flight) {
+        const outbound = flight.itineraries[0];
+        const inbound = flight.itineraries[1] || outbound;
+        
+        return {
+            type: 'Volo',
+            departure: `${outbound.segments[0].departure.iataCode} ${outbound.segments[0].departure.at.split('T')[1].substring(0,5)}`,
+            arrival: `${outbound.segments[outbound.segments.length-1].arrival.iataCode} ${outbound.segments[outbound.segments.length-1].arrival.at.split('T')[1].substring(0,5)}`,
+            return: `${inbound.segments[0].departure.iataCode} ${inbound.segments[0].departure.at.split('T')[1].substring(0,5)}`,
+            returnArrival: `${inbound.segments[inbound.segments.length-1].arrival.iataCode} ${inbound.segments[inbound.segments.length-1].arrival.at.split('T')[1].substring(0,5)}`,
+            duration: outbound.duration,
+            company: outbound.segments[0].carrierCode
+        };
+    }
+
+    // Formatta i dati dell'hotel per la visualizzazione  
+    formatHotelAccommodation(hotel) {
+        if (hotel.name) {
+            // Hotel reale da API
+            return {
+                type: 'Hotel',
+                name: hotel.name,
+                rating: hotel.rating || 4.0,
+                stars: 4,
+                reviews: 150,
+                amenities: ['WiFi gratuito', 'Colazione inclusa', 'Parcheggio', 'Reception 24h']
+            };
+        } else {
+            // Hotel simulato
+            return hotel;
+        }
+    }
+
+    generateMockHotel() {
+        return {
+            name: 'Hotel Central',
+            rating: 4.2,
+            stars: 4,
+            reviews: 180,
+            amenities: ['WiFi gratuito', 'Colazione inclusa', 'Parcheggio']
+        };
+    }
+
+    getDestinationName(iataCode) {
+        const cityMap = {
+            'PAR': 'Parigi',
+            'LON': 'Londra', 
+            'MAD': 'Madrid',
+            'BCN': 'Barcellona',
+            'AMS': 'Amsterdam',
+            'VIE': 'Vienna',
+            'PRG': 'Praga',
+            'BUD': 'Budapest'
+        };
+        return cityMap[iataCode] || iataCode;
+    }
+
+    calculateFlightDuration(flight) {
+        const departure = new Date(flight.itineraries[0].segments[0].departure.at);
+        const arrival = new Date(flight.itineraries[1] ? 
+            flight.itineraries[1].segments[flight.itineraries[1].segments.length-1].arrival.at :
+            flight.itineraries[0].segments[flight.itineraries[0].segments.length-1].arrival.at
+        );
+        return Math.ceil((arrival - departure) / (1000 * 60 * 60 * 24));
     }
 
     // Metodi per integrazione API Amadeus reali

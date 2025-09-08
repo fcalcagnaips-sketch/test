@@ -5,8 +5,8 @@ const API_CONFIG = {
         // Per ambiente di test
         test: {
             baseUrl: 'https://test.api.amadeus.com',
-            apiKey: 'YOUR_TEST_API_KEY',
-            apiSecret: 'YOUR_TEST_API_SECRET'
+            apiKey: 'YOUR_TEST_API_KEY', // Sostituisci con la tua API Key
+            apiSecret: 'YOUR_TEST_API_SECRET' // Sostituisci con il tuo API Secret
         },
         
         // Per ambiente di produzione
